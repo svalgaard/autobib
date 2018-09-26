@@ -33,7 +33,7 @@ Setup or updating a profile is done using `--user`, `--password` and/or `--hostn
     autobib --user CPR --password 1234 --hostname odensebib.dk Peter
 ```
 
-This updates the `[Peter]` section with an "encrypted" CPR number and password.
+This updates the `[Peter]` section in `~/.autobibrc` with an "encrypted" CPR number and password.
 
 If only a profile name is provided, the books corresponding to this user
 is renewed:
