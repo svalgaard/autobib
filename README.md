@@ -45,7 +45,7 @@ is renewed:
 crontab
 =======
 
-One way to use autobib is to add a few lines to your crontab, e.g.,
+One way to use autobib is to add a few lines to your crontab file, e.g.,
 ```
 0 7 */3 * * /path/to/autobib Peter
 0 7 */3 * * /path/to/autobib --html -e e@example.net Peter | sendmail -ti
