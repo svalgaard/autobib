@@ -27,16 +27,26 @@ user@sputnik:~/autobib$ sudo pip install -r requirements.txt
 Setup + Usage
 =============
 
-Setup or updating a profile is done using --user, --password and/or --hostname
-    %(prog)s --user CPR --password 1234 --hostname odensebib.dk Peter
-This updates the [Peter] section with an "encrypted" CPR number and password.
+Setup or updating a profile is done using `--user`, `--password` and/or `--hostname`, e.g.,
+
+```
+    autobib --user CPR --password 1234 --hostname odensebib.dk Peter
+```
+
+This updates the `[Peter]` section with an "encrypted" CPR number and password.
 
 If only a profile name is provided, the books corresponding to this user
 is renewed:
-    %(prog)s Peter
 
-One way to use this is to put it in your crontab using a line like of the
 ```
-0 12 1,16 * * /path/to/%(prog)s Peter
-0 12 1,16 * * /path/to/%(prog)s --html -e e@example.net Peter | sendmail -ti
+    autobib Peter
+```
+
+crontab
+=======
+
+One way to use autobib is to add a few lines to your crontab, e.g.,
+```
+0 7 */3 * * /path/to/autobib Peter
+0 7 */3 * * /path/to/autobib --html -e e@example.net Peter | sendmail -ti
 ```

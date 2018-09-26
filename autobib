@@ -407,7 +407,8 @@ If only a profile name is provided, the books corresponding to this user
 is renewed:
     %(prog)s Peter
 
-One way to use this is to put it in your crontab using a line like of the
+One way to use this is to add a few lines to your crontab, e.g.,
+
 0 12 1,16 * * /path/to/%(prog)s Peter
 0 12 1,16 * * /path/to/%(prog)s --html -e e@example.net Peter | sendmail -ti
 '''.strip())
