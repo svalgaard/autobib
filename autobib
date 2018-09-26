@@ -1,0 +1,509 @@
+#! /usr/bin/env python3
+# -*- encoding: utf-8 -*-
+#
+# Automaticlaly renew your library books
+#
+
+import argparse
+import base64
+import collections
+import configparser
+import datetime
+import mechanicalsoup
+import os
+import re
+import requests
+import sys
+
+CONFIG_FN = os.path.expanduser('~/.autobibrc')
+VERBOSE = False
+
+
+def log(s):
+    if VERBOSE:
+        sys.stderr.write('%s\n' % s)
+
+
+class ProfileConf(configparser.ConfigParser):
+    def __init__(self, filename, profile):
+        super().__init__()
+        self.filename = filename
+        self.profile = profile
+
+        if os.path.isfile(self.filename):
+            self.read(self.filename)
+
+    def write(self):
+        dn = os.path.dirname(self.filename)
+        if dn and not os.path.isdir(dn):
+            os.makedirs(dn)
+        with open(self.filename, 'w') as fp:
+            super().write(fp)
+
+    def __getitem__(self, option):
+        if option == 'profile':
+            return self.profile
+        for section in [self.profile, 'default']:
+            try:
+                value = self.get(section, option)
+                if option in ['username', 'password']:
+                    return self.b64dec(value)
+                return value
+            except configparser.Error:
+                continue
+        return ''
+
+    def __setitem__(self, option, value):
+        option, value = str(option), str(value)
+
+        if option in ['username', 'password']:
+            value = self.b64enc(value)
+
+        if not self.has_section(self.profile):
+            self.add_section(self.profile)
+
+        self.set(self.profile, option, value)
+
+    def b64enc(self, pswd):
+        pswd = base64.b64encode(pswd.encode('utf-8')).decode('utf-8')
+        return ('enc:' + pswd) if pswd else ''
+
+    def b64dec(self, pswd):
+        if pswd.startswith('enc:'):
+            return base64.b64decode(pswd[4:]).decode('utf-8')
+        return pswd
+
+
+###############################################################################
+# List of books -> TEXT or HTML ready for an email
+###############################################################################
+
+def groupByDate(books):
+    date2books = collections.OrderedDict()
+
+    for book in books:
+        date = book[0]
+        if date not in date2books:
+            date2books[date] = []
+        date2books[date].append(book)
+
+    return date2books
+
+
+def output_text(cfg, books):
+    print('%(hostname)s -  %(profile)s' % cfg)
+    print()
+
+    if not books:
+        print('Ingen hjemlån')
+        return
+
+    date2books = groupByDate(books)
+
+    print('-'*50)
+    for date, books in date2books.items():
+        dt = u'-'.join(map(str, date))
+        count = len(books)
+        print(u'%s: %d %s' % (dt, count, u'bøger' if count != 1 else 'bog'))
+    print('-'*50)
+    print()
+
+    for date, books in date2books.items():
+        dt = u'-'.join(map(str, date))
+        for book in books:
+            (expire, title, author) = book
+
+            print(dt)
+            if title:
+                print(title)
+            if author:
+                print(author)
+            print()
+
+
+def output_html(cfg, books):
+    print('''
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml"><head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="format-detection" content="telephone=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0,
+    maximum-scale=1.0, user-scalable=no" />
+<meta http-equiv="X-UA-Compatible" content="IE=9; IE=8; IE=7; IE=EDGE" />
+<title>📚 %(hostname)s - %(profile)s</title>
+<style type="text/css">
+/*<![CDATA[*/
+#outlook a { padding:0; }
+body{ width:100% !important; -webkit-text; size-adjust:100%;
+    -ms-text-size-adjust:100%; margin:0; padding:0; }
+table td {border-collapse: collapse;}
+@media screen and (max-width: 630px) {
+    *[class="hide"] {display:none !important;}
+    *[class="100p"] {width:100% !important; height:auto !important;}
+}
+a { color: #000; }
+* { font-family:'Helvetica Neue',Arial,Helvetica,Roboto,sans-serif; }
+/*]]>*/
+</style>
+</head>
+<body style="padding:0; margin:0; background-color:#dbdcdd" bgcolor="#dbdcdd">
+<table border="0" cellpadding="0" cellspacing="0"
+    style="margin: 0; padding: 0; background-color:#dbdcdd" width="100%">
+<tr><td align="center" valign="top">
+<table width="640" border="0" cellspacing="0" cellpadding="10" class="100p">
+    <tr><td valign="top" bgcolor="#ffffff" class="100p">
+    <table border="0" cellspacing="0" cellpadding="0" width="620" class="100p">
+        <tr><td align="left">
+<h1 style="font-family:Brown,Arial,Helvetica,Roboto,sans-serif;margin:0;
+    font-size:32px;margin-bottom:8px">
+    <font face="Brown,Arial,Helvetica,Roboto,sans-serif"><b>
+        <a style="color:#000;text-decoration:none" href='#'>
+            📚 %(hostname)s - %(profile)s
+        </a>
+    </b></font>
+</h1>
+</td></tr>
+<tr><td>&nbsp;</td></tr>
+<tr><td align="left">
+    '''.strip().replace('%', '%%').replace('%%(', '%(') % cfg)
+
+    date2books = groupByDate(books)
+
+    if not books:
+        print('''
+<h2 style="font-family:Brown,Arial,Helvetica,Roboto,sans-serif;margin:0;
+    font-size:24px;border-bottom: 3px solid #473729; margin: 8px 0">
+    <font face="Brown,Arial,Helvetica,Roboto,sans-serif">
+        <b>Ingen bøger</b>
+    </font>
+</h2>
+Ingen hjemlån pt.
+'''.strip())
+    global ost
+    ost = list(date2books.items())
+    for date, books in date2books.items():
+        count = len(books)
+        booktext = 'bog' if count == 1 else 'bøger'
+        daysInFuture = (datetime.date(*date) - datetime.date.today()).days
+        daysInFuture = min(max(0, daysInFuture), 31)
+        i = int(min(32 - daysInFuture, 31) * 255 / 31.)
+        color = '#' + ('00' + hex((i << 16) + (i//3) * 257)[2:])[-6:]
+        date = u'-'.join(map(str, date))
+
+        print('''
+<h2 style="font-family:Brown,Arial,Helvetica,Roboto,sans-serif;
+    margin:0;font-size:24px;border-bottom: 3px solid #473729; margin: 8px 0">
+    <font face="Brown,Arial,Helvetica,Roboto,sans-serif"><b>
+        %(date)s - %(count)s %(booktext)s
+    </b></font>
+</h2>
+'''.strip().replace('%', '%%').replace('%%(', '%(') % locals())
+
+        for i, book in enumerate(books):
+            expire, title, author = book
+            if not title:
+                title = 'Ingen titel'
+            if not author:
+                author = ''
+            print('''
+<table border="0" cellspacing="0" cellpadding="12" class="100p"
+    style="width:100%; background-color: #fcfcfc; border: 1px solid #e4e4e4;">
+<tr>
+    <td align="left" style="border-left:10px solid %(color)s;font-size:15px;">
+        <h3 style="font-family:Brown,Arial,Helvetica,Roboto,sans-serif;
+            margin:0;font-size:16px;margin-top:0">
+            <font face="Brown,Arial,Helvetica,Roboto,sans-serif">
+                <b>%(title)s</b>
+            </font>
+        </h3>
+    <span style="font-family:'Lyon Display Web',Times,'Times New Roman',serif">
+        <font face="'Lyon Display Web',Times,'Times New Roman',serif">
+            %(author)s
+        </font>
+    </span>
+  </td></tr>
+</table><br/>'''.strip().replace('%', '%%').replace('%%(', '%(') % locals())
+
+    print('''
+
+        </td></tr>
+    </table></td></tr>
+
+    <!-- footer -->
+    <tr><td valign="top" bgcolor="#dbdcdd" class="100p" align="center">
+        <font face="'Lyon Display Web',Times,'Times New Roman',serif"
+            style="color: #000">
+        <small style="font-size: 13px; color: #aaa">%(prog)s
+                    </small>
+        </font>
+    </td></tr>
+</table>
+<!-- inner wrapper table done -->
+
+</td></tr></table>
+</body>
+</html>
+
+
+'''.strip().replace('%', '%%').replace('%%(', '%(') % {
+        'prog': 'autobib'
+    })
+
+
+###############################################################################
+# odensebib.dk and similar
+###############################################################################
+
+def getBrowser(url):
+    browser = mechanicalsoup.StatefulBrowser()
+    # Uncomment for a more verbose output:
+    if VERBOSE:
+        browser.set_verbose(2)
+
+    if url:
+        log('Opening main URL ' + url)
+        try:
+            browser.open(url)
+        except requests.exceptions.ConnectionError:
+            print('It seems that the home page is currently down.')
+            print('Please try again later.')
+            print(url)
+            sys.exit(1)
+
+    return browser
+
+
+def renew_cicero(hostname, username, password):
+    # Start browser
+    browser = getBrowser('https://%s/' % hostname)
+
+    log('Logging in')
+    form = browser.select_form('#user-login-form')
+    form['name'] = username
+    form['pass'] = password
+    browser.submit_selected()
+
+    # check that we are logged in
+    page = browser.get_current_page()
+    das = page.select('#ding-user-loan-amount a')
+    if not das:
+        log('Kan ikke finde login-link')
+        sys.exit(1)
+    browser.follow_link(das[0])
+    page = browser.get_current_page()
+
+    # get list of books
+    log('Clicking renew all')
+    if u'Ingen hjemlån' in page.text:
+        return []
+
+    # at least one book could probably be renewed
+    form = browser.select_form('#ding-loan-loans-form')
+    cboxes = page.select('input[type="checkbox"]')
+    data = dict((i['name'], True) for i in cboxes)
+    form.set_checkbox(data)
+    browser.submit_selected()
+    page = browser.get_current_page()
+
+    books = []
+    for book in page.select('table tr')[1:]:
+        tit = book.select('td.title h2')
+        title = tit[0].text.strip() if tit else ''
+
+        aut = book.find('a', 'author')
+        author = aut.text if aut else ''
+
+        exp = book.find(class_='expire-date')
+        if exp:
+            exp = exp.text.replace('/', ' ').split()
+            expire = tuple(map(int, reversed(exp)))
+        else:
+            expire = 'ukendt'
+
+        books.append((expire, title, author))
+
+    return books
+
+
+def renew_sirsi(hostname, username, password):
+    global browser, page
+    # Start browser
+    browser = getBrowser('https://%s/' % hostname)
+
+    # Should we follow a http-equiv tag?
+    while True:
+        page = browser.get_current_page()
+
+        meta = page.find('meta', {'http-equiv': "refresh"})
+        if meta:
+            dt, purl = meta['content'].split(';')
+            dt = int(dt.strip())
+            if dt < 10:
+                assert(purl.lower().startswith('url='))
+                url = purl[4:]
+                log('Follow http-equiv to ' + url)
+                browser.open_relative(url)
+                continue
+
+        ip = list(page.select('input[name="password"]'))
+        if len(ip) == 1:  # and False:
+            if 'type' in ip[0] and ip[0]['type'].lower() == 'hidden':
+                log('Go to actual login page')
+                form = page.find('form')
+                form = browser.select_form(form)
+                browser.submit_selected()
+                continue
+
+        break
+
+    log('Logging in')
+    page = browser.get_current_page()
+    form = page.find('form', {'name': 'loginform'})
+    form = browser.select_form(form)
+    form['user_id'] = username
+    form['password'] = password
+    browser.submit_selected()
+
+    # check that we are logged in
+    page = browser.get_current_page()
+
+    log('Clicking Status/Forny')
+    browser.follow_link(text=re.compile('.*Status/Forny.*'))
+    log(u'Clicking Forny mine lån')
+    browser.follow_link(text=re.compile('.*Forny mine l.*'))
+
+    log('Clicking renew all')
+    page = browser.get_current_page()
+    form = list(page.select('form.renew_form'))[0]
+    form = browser.select_form(form)
+    form["selection_type"] = "all"
+    browser.submit_selected()
+
+    page = browser.get_current_page()
+    books = []
+    for dd in page.select('dl dd'):
+        cs = list(dd.children)
+        title = str(cs[0]).strip()
+        dt = dd.find('strong').text.split(',')[0]
+        expire = tuple(map(int, reversed(dt.split('/'))))
+        books.append((expire, title, ''))
+
+    return books
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        usage='''%(prog)s [options] PROFILE
+
+This script renews all your renewable library books from odensebib.dk or
+similar Danish public library sites.
+
+Setup or updating a profile is done using --user, --password and/or --hostname
+    %(prog)s --user CPR --password 1234 Peter
+This updates the [Peter] section with an "encrypted" CPR number and password.
+
+If only a profile name is provided, the books corresponding to this user
+is renewed:
+    %(prog)s Peter
+
+One way to use this is to put it in your crontab using a line like of the
+0 12 1,16 * * /path/to/%(prog)s PROFILE
+0 12 1,16 * * /path/to/%(prog)s --html -e e@example.net Peter | sendmail -ti
+'''.strip())
+
+    parser.add_argument(
+        'profile', metavar='PROFILE', type=str,
+        help='The library profile to use')
+    parser.add_argument(
+        '--config-file', metavar='FILENAME',
+        dest='configfilename', default=CONFIG_FN,
+        help='Use the configuration file FILENAME. Default: %s' % CONFIG_FN)
+    parser.add_argument(
+        '--hostname',
+        help='Set/update the hostname to HOSTNAME.')
+    parser.add_argument(
+        '-u', '--username',
+        help='Set/update the user to USERNAME. If USERNAME is empty, '
+             'you are prompted for a new username')
+    parser.add_argument(
+        '-p', '--password',
+        help='Set/update the password to PASSWORD. If PASSWORD is empty, '
+             'you are prompted for a new password')
+    parser.add_argument(
+        '-s', '--smtp', action='store_true', default=False,
+        help='Output suitable SMTP headers')
+    parser.add_argument(
+        '-e', '--email',
+        help='Email address used for the smtp header. Implies --smtp')
+    parser.add_argument(
+        '-H', '--html', action='store_true', default=False,
+        help='Output HTML suitable for piping into sendmail -t')
+    parser.add_argument(
+        '-v', '--verbose', action='store_true', default=False,
+        help='Write additional logging info suitable for debugging')
+
+    args = parser.parse_args()
+    cfg = ProfileConf(args.configfilename, args.profile)
+
+    global VERBOSE
+    VERBOSE = args.verbose
+
+    setup = False
+    if args.username is not None:
+        setup = True
+        if not args.username:
+            args.username = input('Username: ')
+        cfg['username'] = args.username
+    if args.password is not None:
+        setup = True
+        if not args.password:
+            args.password = input('Password: ')
+        cfg['password'] = args.password
+    if args.hostname:
+        setup = True
+        if not args.hostname:
+            args.hostname = input('Hostname: ')
+        cfg['hostname'] = args.hostname
+
+    if setup:
+        cfg.write()
+        print('Settings updated in %s.' % args.configfilename)
+        sys.exit(0)
+
+    missing = (v for v in ('username', 'password', 'hostname') if not cfg[v])
+    missing = list(missing)
+
+    if missing:
+        parser.error('Missing setup for the following options: %r' % missing)
+
+    # Now run the actual renewal process
+    if True:
+        rcmd = renew_cicero
+        if '.sdu.' in cfg['hostname']:
+            rcmd = renew_sirsi
+
+        books = rcmd(cfg['hostname'], cfg['username'], cfg['password'])
+    else:
+        import pickle
+        books = pickle.load(open('/tmp/books', 'rb'))
+
+    if args.smtp or args.email:
+        if args.email:
+            print('To: %s' % args.email)
+        print('Subject: 📚 %s - %s - %s %s' % (
+            cfg['hostname'], cfg['profile'], len(books),
+            'bog' if len(books) == 1 else 'bøger'
+        ))
+        if args.html:
+            print('Content-type: text/html')
+        print()
+
+    if args.html:
+        output_html(cfg, books)
+    else:
+        output_text(cfg, books)
+
+
+if __name__ == '__main__':
+    main()
