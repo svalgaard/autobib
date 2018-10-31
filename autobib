@@ -375,8 +375,10 @@ def renew_sirsi(hostname, username, password):
 
     log('Clicking renew all')
     page = browser.get_current_page()
-    form = list(page.select('form.renew_form'))[0]
-    form = browser.select_form(form)
+    forms = list(page.select('form.renew_form'))
+    if not forms:
+       return []
+    form = browser.select_form(forms[0])
     form["selection_type"] = "all"
     browser.submit_selected()
 
@@ -385,8 +387,11 @@ def renew_sirsi(hostname, username, password):
     for dd in page.select('dl dd'):
         cs = list(dd.children)
         title = str(cs[0]).strip()
-        dt = dd.find('strong').text.split(',')[0]
-        expire = tuple(map(int, reversed(dt.split('/'))))
+        if dd.find('strong'):
+            dt = dd.find('strong').text.split(',')[0]
+            expire = tuple(map(int, reversed(dt.split('/'))))
+        else:
+            expire = (2000, 1, 1)
         books.append((expire, title, ''))
 
     return books
